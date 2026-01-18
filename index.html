@@ -1,0 +1,300 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>旅の記録マップ</title>
+  <!-- Leaflet CSS -->
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+    crossorigin=""
+  />
+  <style>
+    html, body { height: 100%; margin: 0; }
+    #app { height: 100%; display: grid; grid-template-rows: auto 1fr; }
+    header {
+      padding: .6rem .9rem; display: flex; gap: .75rem; align-items: center; flex-wrap: wrap;
+      border-bottom: 1px solid #e5e7eb; background: #fafafa;
+    }
+    header h1 { font-size: 1rem; margin: 0; }
+    header .hint { color: #6b7280; font-size: .85rem; }
+    #map { width: 100%; height: calc(100vh - 60px); }
+    .toolbar { margin-left: auto; display: flex; gap: .5rem; }
+    button, input[type="file"]::file-selector-button { cursor: pointer; }
+    .btn { padding: .4rem .6rem; border: 1px solid #e5e7eb; background: white; border-radius: .5rem; }
+    .btn:hover { background: #f3f4f6; }
+    .search { display: flex; gap: .5rem; align-items: center; }
+    .search input { padding: .4rem .6rem; border: 1px solid #e5e7eb; border-radius: .5rem; }
+    .leaflet-popup-content form { display: grid; gap: .5rem; min-width: 240px; }
+    .field { display: grid; gap: .25rem; }
+    .field label { font-size: .8rem; color: #374151; }
+    .field input, .field textarea { width: 100%; padding: .45rem .55rem; border: 1px solid #d1d5db; border-radius: .4rem; }
+    .muted { color:#6b7280; font-size:.85rem; }
+    .tag { display:inline-block; padding:.15rem .4rem; border:1px solid #e5e7eb; border-radius:.4rem; font-size:.75rem; color:#374151; }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <header>
+      <h1>旅の記録マップ</h1>
+      <div class="hint">地図をクリック → フォーム入力でブログを紐づけできます。</div>
+      <div class="search">
+        <input id="q" placeholder="キーワードで絞り込み（タイトル・メモ）" />
+        <button id="clearFilter" class="btn">解除</button>
+      </div>
+      <div class="toolbar">
+        <button id="exportBtn" class="btn">エクスポート</button>
+        <label class="btn" for="importFile">インポート</label>
+        <input type="file" id="importFile" accept="application/json" hidden />
+        <button id="resetBtn" class="btn" title="すべてのピンとデータを削除">全消去</button>
+        <!-- <a href="memo.html">作業メモ</a> -->
+      </div>
+      <div class="hint">
+        ※ ピンのデータは、このブラウザ内にのみ保存されます（他の人とは共有されません）<br>
+        ※ 個人の旅記録用として試験的に公開しています
+      </div>
+    </header>
+    <div id="map"></div>
+    <footer style="text-align:center; font-size:.8rem; color:#6b7280;"> 
+    © 2026 Kenji / Personal Travel Log
+  　</footer>    
+  </div>
+
+  <!-- <footer style="text-align:center; font-size:.8rem; color:#6b7280;"> 
+  © 2026 Kenji / Personal Travel Log
+　</footer>-->
+
+  <!-- Leaflet JS -->
+  <script
+    src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+    crossorigin=""
+  ></script>
+  <script>
+    const STORAGE_KEY = 'travelEntries:v1';
+    /** @type {Array<{id:string,lat:number,lng:number,title:string,url?:string,note?:string,date:string,tags?:string[]}>} */
+    let entries = [];
+    const markers = new Map();
+
+    function load() {
+      try { entries = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]'); } catch { entries = []; }
+    }
+    function save() {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(entries));
+    }
+
+    // Map init (center on Japan)
+    const map = L.map('map', { worldCopyJump: true }).setView([35.6812, 139.7671], 5);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(map);
+
+    function renderMarkers(filterText='') {
+      // Clear existing markers
+      markers.forEach(m => map.removeLayer(m));
+      markers.clear();
+
+      const q = filterText.trim().toLowerCase();
+      entries.forEach(e => {
+        const hit = !q || (e.title?.toLowerCase().includes(q) || e.note?.toLowerCase().includes(q) || (e.tags||[]).join(',').toLowerCase().includes(q));
+        if (!hit) return;
+        const marker = L.marker([e.lat, e.lng]).addTo(map);
+        marker.bindPopup(renderPopupHTML(e), { maxWidth: 320 });
+        markers.set(e.id, marker);
+      });
+    }
+
+    function renderPopupHTML(e) {
+      const dateStr = new Date(e.date).toLocaleString();
+      const url = e.url ? `<p><a href="${e.url}" target="_blank" rel="noopener">ブログを見る ↗</a></p>` : '';
+      const tags = (e.tags && e.tags.length) ? `<p>${e.tags.map(t=>`<span class="tag">${escapeHtml(t)}</span>`).join(' ')}</p>` : '';
+      return `
+        <div>
+          <h3 style="margin:0 0 .25rem; font-size:1rem;">${escapeHtml(e.title || '（無題）')}</h3>
+          <p class="muted" style="margin:.1rem 0 .5rem;">${dateStr}</p>
+          ${e.note ? `<p>${escapeHtml(e.note)}</p>` : ''}
+          ${url}
+          ${tags}
+          <div style="display:flex; gap:.5rem; margin-top:.5rem;">
+            <button data-action="edit" data-id="${e.id}" class="btn">編集</button>
+            <button data-action="delete" data-id="${e.id}" class="btn" style="border-color:#fecaca;">削除</button>
+          </div>
+        </div>
+      `;
+    }
+
+    function uid() { return Math.random().toString(36).slice(2, 10) + Date.now().toString(36); }
+
+    function showCreateForm(latlng) {
+      const formHTML = `
+        <form id="createForm">
+          <div class="field">
+            <label>タイトル</label>
+            <input name="title" placeholder="例：山崎駅の朝焼け" required />
+          </div>
+          <div class="field">
+            <label>ブログURL（任意）</label>
+            <input name="url" placeholder="https://..." />
+          </div>
+          <div class="field">
+            <label>メモ（任意）</label>
+            <textarea name="note" rows="3" placeholder="感想や出来事など"></textarea>
+          </div>
+          <div class="field">
+            <label>タグ（カンマ区切り・任意）</label>
+            <input name="tags" placeholder="JR北海道, 朝の景色 など" />
+          </div>
+          <button class="btn" type="submit">追加</button>
+        </form>`;
+
+      const pop = L.popup().setLatLng(latlng).setContent(formHTML).openOn(map);
+      setTimeout(() => {
+        const form = document.getElementById('createForm');
+        form?.addEventListener('submit', (ev) => {
+          ev.preventDefault();
+          const fd = new FormData(form);
+          const entry = {
+            id: uid(),
+            lat: latlng.lat,
+            lng: latlng.lng,
+            title: (fd.get('title')||'').toString(),
+            url: (fd.get('url')||'').toString().trim() || undefined,
+            note: (fd.get('note')||'').toString().trim() || undefined,
+            tags: (fd.get('tags')||'').toString().split(',').map(s=>s.trim()).filter(Boolean),
+            date: new Date().toISOString(),
+          };
+          entries.push(entry); save();
+          map.closePopup(pop);
+          renderMarkers(document.getElementById('q').value);
+        });
+      }, 0);
+    }
+
+    function showEditForm(entry) {
+      const latlng = { lat: entry.lat, lng: entry.lng };
+      const formHTML = `
+        <form id="editForm">
+          <div class="field">
+            <label>タイトル</label>
+            <input name="title" value="${escapeAttr(entry.title)}" required />
+          </div>
+          <div class="field">
+            <label>ブログURL（任意）</label>
+            <input name="url" value="${escapeAttr(entry.url||'')}" />
+          </div>
+          <div class="field">
+            <label>メモ（任意）</label>
+            <textarea name="note" rows="3">${escapeHtml(entry.note||'')}</textarea>
+          </div>
+          <div class="field">
+            <label>タグ（カンマ区切り・任意）</label>
+            <input name="tags" value="${escapeAttr((entry.tags||[]).join(', '))}" />
+          </div>
+          <button class="btn" type="submit">保存</button>
+        </form>`;
+
+      const pop = L.popup().setLatLng(latlng).setContent(formHTML).openOn(map);
+      setTimeout(() => {
+        const form = document.getElementById('editForm');
+        form?.addEventListener('submit', (ev) => {
+          ev.preventDefault();
+          const fd = new FormData(form);
+          entry.title = (fd.get('title')||'').toString();
+          entry.url = (fd.get('url')||'').toString().trim() || undefined;
+          entry.note = (fd.get('note')||'').toString().trim() || undefined;
+          entry.tags = (fd.get('tags')||'').toString().split(',').map(s=>s.trim()).filter(Boolean);
+          save();
+          map.closePopup(pop);
+          renderMarkers(document.getElementById('q').value);
+        });
+      }, 0);
+    }
+
+    function escapeHtml(s){
+      return (s||'').replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",
+      ">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
+    }
+    function escapeAttr(s){ return escapeHtml(s).replace(/\n/g,' '); }
+
+    map.on('click', (e) => showCreateForm(e.latlng));
+
+    // Handle popup button events (edit/delete)
+    map.on('popupopen', (e) => {
+      const el = e.popup.getElement();
+      el?.addEventListener('click', (evt) => {
+        const btn = evt.target.closest('button');
+        if (!btn) return;
+        const id = btn.getAttribute('data-id');
+        const action = btn.getAttribute('data-action');
+        const entry = entries.find(x => x.id === id);
+        if (!entry) return;
+        if (action === 'delete') {
+          if (confirm('このピンを削除しますか？')) {
+            entries = entries.filter(x => x.id !== id); save();
+            renderMarkers(document.getElementById('q').value);
+            map.closePopup();
+          }
+        } else if (action === 'edit') {
+          showEditForm(entry);
+        }
+      });
+    });
+
+    // Search filter
+    const qEl = document.getElementById('q');
+    qEl.addEventListener('input', () => renderMarkers(qEl.value));
+    document.getElementById('clearFilter').addEventListener('click', () => { qEl.value=''; renderMarkers(''); });
+
+    // Export / Import / Reset
+    document.getElementById('exportBtn').addEventListener('click', () => {
+      const blob = new Blob([JSON.stringify(entries, null, 2)], { type: 'application/json' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'travel-entries.json';
+      a.click();
+      URL.revokeObjectURL(a.href);
+    });
+    document.getElementById('importFile').addEventListener('change', (ev) => {
+      const file = ev.target.files?.[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        try {
+          const data = JSON.parse(reader.result);
+          if (!Array.isArray(data)) throw new Error('Invalid JSON');
+          entries = data; save(); renderMarkers(document.getElementById('q').value);
+          alert('インポートしました');
+        } catch (err) {
+          alert('読み込みに失敗しました: ' + err.message);
+        }
+      };
+      reader.readAsText(file);
+      ev.target.value = '';
+    });
+    document.getElementById('resetBtn').addEventListener('click', () => {
+      if (confirm('すべてのピンを削除します。よろしいですか？')) {
+        entries = []; save(); renderMarkers(document.getElementById('q').value);
+      }
+    });
+
+    // Seed example (only once if no data)
+    load();
+    if (!entries.length) {
+      entries.push({
+        id: uid(),
+        lat: 42.1002, lng: 140.3320,
+        title: 'JR北海道・山崎駅の朝',
+        url: '',
+        note: 'ホームから見えた海霧が印象的。7:30着〜12:00滞在のメモ。',
+        tags: ['北海道','駅','朝景'],
+        date: new Date().toISOString()
+      });
+      save();
+    }
+
+    renderMarkers();
+  </script>
+</body>
+</html>
